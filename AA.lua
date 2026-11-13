@@ -2305,21 +2305,7 @@ local _lastEquippedCheck = 0
 local _cachedEquipped = {}
 local getEquippedUnits = function(force)
     local now = tick()
-    if not force and (now - _lastEquippedCheck < 0.25) and #_cachedEquipped > 0 then
-        local owned = getOwnedUnitsInGame()
-        local placedCounts = {}
-        for _, u in ipairs(owned) do
-            local stats = u:FindFirstChild("_stats")
-            if stats and stats:FindFirstChild("id") then
-                local id = stats.id.Value
-                placedCounts[id] = (placedCounts[id] or 0) + 1
-            end
-        end
-        for _, eq in ipairs(_cachedEquipped) do
-            local curPlaced = (eq.unitId and placedCounts[eq.unitId]) or 0
-            eq.cur = curPlaced
-            eq.canPlaceMore = (curPlaced < eq.max)
-        end
+    if not force and (now - _lastEquippedCheck < 0.35) and #_cachedEquipped > 0 then
         State.EquippedUnits = _cachedEquipped
         return _cachedEquipped
     end
@@ -3543,7 +3529,7 @@ local refreshGridOccupancy = function(force)
         end
     end
 
-    if not force and (currentTowers == _lastUnitsCount) and (now - _lastOccCheck < 2.0) then
+    if not force and ((now - _lastOccCheck < 0.75) or ((currentTowers == _lastUnitsCount) and (now - _lastOccCheck < 3.0))) then
         return
     end
     _lastOccCheck = now
@@ -6781,12 +6767,21 @@ local function saveSharedPartyInfo(mainUser, altUsers)
             Main = m,
             Alts = a
         }
+        _cachedPartyInfoData = data
+        _lastPartyFileRead = tick()
         writefile(PARTY_SYNC_FILE, HttpService:JSONEncode(data))
     end)
 end
 
-local function loadSharedPartyInfo()
+local _lastPartyFileRead = 0
+local _cachedPartyInfoData = nil
+local function loadSharedPartyInfo(force)
     if not readfile or not isfile then return nil end
+    local now = tick()
+    if not force and _cachedPartyInfoData and (now - _lastPartyFileRead < 4.0) then
+        return _cachedPartyInfoData
+    end
+    _lastPartyFileRead = now
     local info = nil
     pcall(function()
         if isfile(PARTY_SYNC_FILE) then
@@ -6799,6 +6794,7 @@ local function loadSharedPartyInfo()
             end
         end
     end)
+    _cachedPartyInfoData = info
     return info
 end
 
@@ -8050,7 +8046,7 @@ local processEventMatchAutomation = function()
             return
         end
     end
-    if (Config.AutoPickCards or Config.BestForEventCurrency) and (now - (State.LastCardCheck or 0) > 0.3) then
+    if (Config.AutoPickCards or Config.BestForEventCurrency) and (now - (State.LastCardCheck or 0) > 0.8) then
         State.LastCardCheck = now
         if isRoguelikeChoiceActive() then
             pcall(pickBestRoguelikeCard)
@@ -8559,52 +8555,76 @@ if getgenv().AJ_HUB_HEARTBEAT then
     pcall(function() getgenv().AJ_HUB_HEARTBEAT:Disconnect() end)
     getgenv().AJ_HUB_HEARTBEAT = nil
 end
-local _lastTickTime = 0
-getgenv().AJ_HUB_HEARTBEAT = RunService.Heartbeat:Connect(function()
-    local now = tick()
-    if now - _lastTickTime < 0.08 then return end
-    _lastTickTime = now
-    if isLobby() then
-        local folder = Camera:FindFirstChild("_AJ_HUB_VisualGrid") or Workspace:FindFirstChild("_AJ_HUB_VisualGrid")
-        if folder then folder:Destroy() end
-        local ghostFolder = Camera:FindFirstChild("_AJ_HUB_GhostPreview") or Workspace:FindFirstChild("_AJ_HUB_GhostPreview")
-        if ghostFolder then ghostFolder:Destroy() end
-        local markerFolder = Camera:FindFirstChild("_AJ_HUB_PlacementMarker") or Workspace:FindFirstChild("_AJ_HUB_PlacementMarker")
-        if markerFolder then markerFolder:Destroy() end
-        local hover = Camera:FindFirstChild("_AJ_HUB_HoverMarker")
-        if hover then hover:Destroy() end
-        State.CurrentMapKey = nil
-        State.CurrentMapName = nil
-        State.CurrentMapData = nil
-        State.AntiPunishIdx = nil
-        State.AntiPunishWalking = false
-        State.PlayerAnchors = nil
-        State.StickClusterCenter = nil
-        State.GriffinBuffCompleted = false
-        if State.PickingPlacementArea then
-            State.PickingPlacementArea = false
-            if State.PlacementPickConn then
-                State.PlacementPickConn:Disconnect()
-                State.PlacementPickConn = nil
+if getgenv().AJ_HUB_HEARTBEAT then
+    pcall(function() getgenv().AJ_HUB_HEARTBEAT:Disconnect() end)
+    getgenv().AJ_HUB_HEARTBEAT = nil
+end
+if getgenv().AJ_HUB_MAIN_THREAD then
+    pcall(task.cancel, getgenv().AJ_HUB_MAIN_THREAD)
+    getgenv().AJ_HUB_MAIN_THREAD = nil
+end
+
+getgenv().AJ_HUB_MAIN_THREAD = task.spawn(function()
+    local stepCounter = 0
+    while true do
+        task.wait(0.12)
+        stepCounter = stepCounter + 1
+
+        if isLobby() then
+            if State.CurrentMapKey then
+                local folder = Camera:FindFirstChild("_AJ_HUB_VisualGrid") or Workspace:FindFirstChild("_AJ_HUB_VisualGrid")
+                if folder then folder:Destroy() end
+                local ghostFolder = Camera:FindFirstChild("_AJ_HUB_GhostPreview") or Workspace:FindFirstChild("_AJ_HUB_GhostPreview")
+                if ghostFolder then ghostFolder:Destroy() end
+                local markerFolder = Camera:FindFirstChild("_AJ_HUB_PlacementMarker") or Workspace:FindFirstChild("_AJ_HUB_PlacementMarker")
+                if markerFolder then markerFolder:Destroy() end
+                local hover = Camera:FindFirstChild("_AJ_HUB_HoverMarker")
+                if hover then hover:Destroy() end
+                State.CurrentMapKey = nil
+                State.CurrentMapName = nil
+                State.CurrentMapData = nil
+                State.AntiPunishIdx = nil
+                State.AntiPunishWalking = false
+                State.PlayerAnchors = nil
+                State.StickClusterCenter = nil
+                State.GriffinBuffCompleted = false
+                if State.PickingPlacementArea then
+                    State.PickingPlacementArea = false
+                    if State.PlacementPickConn then
+                        State.PlacementPickConn:Disconnect()
+                        State.PlacementPickConn = nil
+                    end
+                end
+            end
+            processAntiPunishment()
+            if not processAutoEquipPreset() then
+                processLobbyAutomation()
+                processEventLobbyAutomation()
+            end
+        else
+            processAutoEquipPreset()
+            if State.processAutoGriffith then State.processAutoGriffith() end
+
+            processAutoPlace()
+            processAutoUpgrade()
+
+            if stepCounter % 2 == 0 then
+                processAutoAbilities()
+                processAutoSkip()
+            end
+
+            if stepCounter % 4 == 0 then
+                processUnitTargeting()
+                processAutoStart()
+                processAntiPunishment()
+            end
+
+            if stepCounter % 6 == 0 then
+                processMatchAutomation()
+                processEventMatchAutomation()
             end
         end
-        processAntiPunishment()
-        if processAutoEquipPreset() then return end
-        processLobbyAutomation()
-        processEventLobbyAutomation()
-        return
     end
-    processAutoEquipPreset()
-    if State.processAutoGriffith then State.processAutoGriffith() end
-    processAutoPlace()
-    processAutoUpgrade()
-    processAutoAbilities()
-    processUnitTargeting()
-    processAntiPunishment()
-    processAutoSkip()
-    processAutoStart()
-    processMatchAutomation()
-    processEventMatchAutomation()
 end)
 task.spawn(function()
     task.wait(0.5)
@@ -10832,7 +10852,7 @@ end)
 task.spawn(function()
     local lastRosterHash = ""
     while true do
-        task.wait(0.75)
+        task.wait(2.0)
         pcall(function()
             local spawnGui = LocalPlayer.PlayerGui:FindFirstChild("spawn_units")
             local grid = spawnGui and spawnGui:FindFirstChild("Lives") and spawnGui.Lives:FindFirstChild("Frame") and spawnGui.Lives.Frame:FindFirstChild("Units")
@@ -10997,8 +11017,9 @@ do
     updateRoleVisibility()
 
     task.spawn(function()
-        while task.wait(1.5) do
+        while task.wait(2.5) do
             pcall(function()
+                if not isLobby() then return end
                 updateRoleVisibility()
                 local role = getPartyRole()
                 local myPartyId = LocalPlayer:GetAttribute("PartyId")
