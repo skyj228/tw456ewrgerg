@@ -8176,9 +8176,8 @@ local function getBuffUnitEffectiveCooldown(unit)
     end
     local stats = unit._stats
     local baseCd = stats:FindFirstChild("active_attack_cooldown") and stats.active_attack_cooldown.Value or 63.62
-    local debuff = getBuffCooldownDebuffPercent()
-    local mult = 1 + (math.max(debuff, 0) / 100)
-    return math.max(baseCd, baseCd * mult)
+    if baseCd <= 0 then baseCd = 63.62 end
+    return baseCd
 end
 local function getBuffUnitCooldownRemaining(unit)
     if not unit or not unit.Parent or not unit:FindFirstChild("_stats") then
@@ -8186,6 +8185,23 @@ local function getBuffUnitCooldownRemaining(unit)
     end
     local stats = unit._stats
     local effectiveCd = getBuffUnitEffectiveCooldown(unit)
+    local actName = stats:FindFirstChild("active_attack") and stats.active_attack.Value or ""
+    
+    local okAr, cdRem, arReady, fullCd = pcall(function()
+        local Loader = require(game:GetService("ReplicatedStorage").src.Loader)
+        local ar = Loader.load_client_service(nil, "AttacksReplicate")
+        if ar and ar.get_current_active_attack_cooldown then
+            local r1, r2, r3 = ar.get_current_active_attack_cooldown(unit, actName)
+            return r1, r2, r3
+        end
+    end)
+    if okAr and (arReady == true or (cdRem and cdRem <= 0.05)) then
+        return 0, true, fullCd or effectiveCd
+    end
+    if okAr and cdRem and type(cdRem) == "number" and cdRem > 0 then
+        return cdRem, false, fullCd or effectiveCd
+    end
+
     local nowTick = tick()
     local lastLocal = buffLastCastSuccess[unit] or 0
     local remLocal = 0
@@ -8216,7 +8232,7 @@ local function canBuffUnitCast(unit)
         return false, "cooldown"
     end
     local lastTry = buffLastAttempt[unit] or 0
-    if (tick() - lastTry) < 0.6 then
+    if (tick() - lastTry) < 0.4 then
         return false, "throttled"
     end
     return true, "ready"
@@ -8251,21 +8267,27 @@ local function callBuffActiveAttack(unit)
     end
     return success
 end
+local _cachedBuffOffsets = {}
 local function calculateBuffOffset(unit)
+    local uId = unit and (unit:GetAttribute("_SPAWN_UNIT_UUID") or unit.Name)
+    if uId and _cachedBuffOffsets[uId] then
+        return _cachedBuffOffsets[uId]
+    end
     local stats = unit and unit:FindFirstChild("_stats")
     local effectiveCd = getBuffUnitEffectiveCooldown(unit)
-    local debuff = getBuffCooldownDebuffPercent()
     local baseSpa = stats and stats:FindFirstChild("attack_cooldown") and stats.attack_cooldown.Value or 15
-    local spa = baseSpa * (1 + (math.max(debuff, 0) / 100))
-    local sDigit = math.floor(spa % 10)
+    local sDigit = math.floor(baseSpa % 10)
     local offset = (sDigit >= 3 and sDigit <= 8) and sDigit or 4
     if effectiveCd > 60 and (effectiveCd - 60 + 1) > offset then
         offset = effectiveCd - 60 + 1
     end
+    if uId then
+        _cachedBuffOffsets[uId] = offset
+    end
     return offset
 end
 local function waitBuffUntilReady(unit, maxWaitSec)
-    local deadline = tick() + (maxWaitSec or 120)
+    local deadline = tick() + (maxWaitSec or 90)
     while buffRunning and tick() < deadline do
         if isLobby() then return false end
         if not unit or not unit.Parent then return false end
@@ -8274,15 +8296,15 @@ local function waitBuffUntilReady(unit, maxWaitSec)
             return true
         end
         local rem = getBuffUnitCooldownRemaining(unit)
-        task.wait(math.clamp(rem, 0.2, 0.6))
+        task.wait(math.clamp(rem, 0.15, 0.5))
     end
     return false
 end
 local function castBuffSafely(unit, maxWaitSec)
-    if not waitBuffUntilReady(unit, maxWaitSec) then
+    if not waitBuffUntilReady(unit, maxWaitSec or 90) then
         return false
     end
-    local deadline = tick() + 4
+    local deadline = tick() + 8.0
     while buffRunning and tick() < deadline do
         if isLobby() then return false end
         if not unit or not unit.Parent then return false end
@@ -8292,7 +8314,7 @@ local function castBuffSafely(unit, maxWaitSec)
                 return true
             end
         end
-        task.wait(0.6)
+        task.wait(0.4)
     end
     return false
 end
@@ -8317,43 +8339,67 @@ local startBuffMonitor = function(groupKey, isEnabledFn)
                 else
                     if not sessionThread or coroutine.status(sessionThread) == "dead" then
                         sessionThread = task.spawn(function()
-                            while buffRunning do
-                                if isLobby() or not isEnabledFn() then return end
+                            -- Smart initialization: if rotation is already in flight, do not stall waiting for all 4 to cool down
+                            do
                                 local curUnits = getPlacedBuffUnits(groupKey)
-                                if #curUnits < 4 then return end
-                                local u1, u2, u3, u4 = curUnits[1], curUnits[2], curUnits[3], curUnits[4]
-                                local _, ok1 = getBuffUnitCooldownRemaining(u1)
-                                local _, ok2 = getBuffUnitCooldownRemaining(u2)
-                                local _, ok3 = getBuffUnitCooldownRemaining(u3)
-                                local _, ok4 = getBuffUnitCooldownRemaining(u4)
-                                if ok1 and ok2 and ok3 and ok4 then
-                                    break
+                                if #curUnits >= 4 then
+                                    local hasAnyRecentCast = false
+                                    for _, u in ipairs(curUnits) do
+                                        local _, isReady = getBuffUnitCooldownRemaining(u)
+                                        if not isReady then
+                                            hasAnyRecentCast = true
+                                            break
+                                        end
+                                    end
+                                    if not hasAnyRecentCast then
+                                        -- Clean fresh start: wait until at least u1 and u2 are ready
+                                        while buffRunning do
+                                            if isLobby() or not isEnabledFn() then return end
+                                            local cu = getPlacedBuffUnits(groupKey)
+                                            if #cu < 4 then return end
+                                            local _, ok1 = getBuffUnitCooldownRemaining(cu[1])
+                                            local _, ok2 = getBuffUnitCooldownRemaining(cu[2])
+                                            if ok1 and ok2 then break end
+                                            task.wait(0.5)
+                                        end
+                                    end
                                 end
-                                task.wait(0.5)
                             end
+
                             while buffRunning do
                                 if isLobby() or not isEnabledFn() then return end
                                 local curUnits = getPlacedBuffUnits(groupKey)
                                 if #curUnits < 4 then return end
                                 local u1, u2, u3, u4 = curUnits[1], curUnits[2], curUnits[3], curUnits[4]
                                 local offset = calculateBuffOffset(u1)
-                                castBuffSafely(u1, 90)
+                                local maxWait = math.max(getBuffUnitEffectiveCooldown(u1) + 15, 75)
+
+                                -- Step 1: Unit 1
+                                local ok1 = castBuffSafely(u1, maxWait)
                                 local t1 = tick()
+
+                                -- Step 2: Unit 2 after offset
                                 local waitU2 = math.max((t1 + offset) - tick(), 0)
                                 if waitU2 > 0 then task.wait(waitU2) end
                                 if not buffRunning or isLobby() or not isEnabledFn() then return end
-                                castBuffSafely(u2, 20)
-                                local t2 = tick()
+                                local ok2 = castBuffSafely(u2, maxWait)
+                                local t2 = ok2 and tick() or (t1 + offset)
+
+                                -- Step 3: Unit 3 replaces Unit 1 at t1 + 30
                                 local waitU3 = math.max((t1 + 30) - tick(), 0)
                                 if waitU3 > 0 then task.wait(waitU3) end
                                 if not buffRunning or isLobby() or not isEnabledFn() then return end
-                                castBuffSafely(u3, 20)
-                                local t3 = tick()
+                                local ok3 = castBuffSafely(u3, maxWait)
+                                local t3 = ok3 and tick() or (t1 + 30)
+
+                                -- Step 4: Unit 4 replaces Unit 2 at t2 + 30
                                 local waitU4 = math.max((t2 + 30) - tick(), 0)
                                 if waitU4 > 0 then task.wait(waitU4) end
                                 if not buffRunning or isLobby() or not isEnabledFn() then return end
-                                castBuffSafely(u4, 20)
-                                local t4 = tick()
+                                local ok4 = castBuffSafely(u4, maxWait)
+                                local t4 = ok4 and tick() or (t2 + 30)
+
+                                -- Step 5: Wait until Unit 3 expires before restarting cycle
                                 local waitCycle = math.max((t3 + 30) - tick(), 0)
                                 if waitCycle > 0 then
                                     task.wait(waitCycle)
@@ -8375,6 +8421,7 @@ local startBuffMonitor = function(groupKey, isEnabledFn)
 end
 startBuffMonitor("wendy", function() return Config.AutoBuffWendy end)
 startBuffMonitor("erwin", function() return Config.AutoBuffCommander end)
+startBuffMonitor("leafy", function() return Config.AutoBuffWendy or Config.AutoBuffCommander end)
 local shadowgirlLoopRunning = true
 local shadowgirlLastCastTime = {}
 local function getPlacedShadowgirls()
