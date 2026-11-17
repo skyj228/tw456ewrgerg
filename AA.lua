@@ -1642,6 +1642,7 @@ State = {
     CurrentMapData = nil,
     PickingPlacementArea = false,
     PlacementPickConn = nil,
+    PlacementPickMouseConn = nil,
     Lanes = {},
     Spots = {},
     NextSpot = nil,
@@ -2012,7 +2013,30 @@ local isFarmUnit = function(unitInput)
     local id = ""
     if type(unitInput) == "table" then
         name = tostring(unitInput.name or unitInput.Name or ""):lower()
-        id = tostring(unitInput.id or unitInput.unitId or ""):lower()
+        id = tostring(unitInput.id or unitInput.unitId or unitInput.unit_id or ""):lower()
+        if (id == "" or name:find("slot")) and unitInput.uuid then
+            local UnitColl = getUnitCollectionServiceClient()
+            if UnitColl and UnitColl.get_equipped_unit_by_uuid then
+                pcall(function()
+                    local uData = UnitColl.get_equipped_unit_by_uuid(unitInput.uuid)
+                    if uData and uData.unit_id then
+                        id = tostring(uData.unit_id):lower()
+                    end
+                end)
+            end
+        end
+        if (id == "" or name:find("slot")) and unitInput.slot then
+            pcall(function()
+                local lp = LocalPlayer or game:GetService("Players").LocalPlayer
+                local su = lp and lp.PlayerGui and lp.PlayerGui:FindFirstChild("spawn_units")
+                local grid = su and su:FindFirstChild("Lives") and su.Lives:FindFirstChild("Frame") and su.Lives.Frame:FindFirstChild("Units")
+                local slotFrame = grid and grid:FindFirstChild(tostring(unitInput.slot))
+                local nLbl = slotFrame and slotFrame:FindFirstChild("name", true)
+                if nLbl and nLbl.Text and #nLbl.Text > 0 then
+                    name = nLbl.Text:lower()
+                end
+            end)
+        end
     elseif type(unitInput) == "string" then
         name = unitInput:lower()
     elseif typeof and typeof(unitInput) == "Instance" then
@@ -2037,25 +2061,35 @@ local isFarmUnit = function(unitInput)
             return true
         end
     end
-    local combined = (name .. " " .. id):lower()
-    if combined:find("bulm") ~= nil
-        or combined:find("bulb") ~= nil
-        or combined:find("ceo") ~= nil
-        or combined:find("c%.e%.o") ~= nil
-        or combined:find("speedwagon") ~= nil
-        or combined:find("speedcart") ~= nil
-        or combined:find("speed_cart") ~= nil
-        or combined:find("idol") ~= nil
-        or combined:find("hoshino") ~= nil
-        or combined:find("otaku") ~= nil
-        or combined:find("farm") ~= nil
-        or combined:find("nami") ~= nil
-        or combined:find("burglar") ~= nil
-        or combined:find("weather girl") ~= nil
-        or combined:find("chiyo") ~= nil
-        or combined:find("celeb") ~= nil
-        or combined:find("money") ~= nil
-        or combined:find("income") ~= nil then
+    local raw = (name .. " " .. id):lower()
+    local clean = raw:gsub("[%s%.%-_%*%(%)]", "")
+    if raw:find("bulm") ~= nil
+        or raw:find("bulb") ~= nil
+        or raw:find("ceo") ~= nil
+        or raw:find("c%.e%.o") ~= nil
+        or raw:find("speedwagon") ~= nil
+        or raw:find("speedcart") ~= nil
+        or raw:find("speed_cart") ~= nil
+        or raw:find("idol") ~= nil
+        or raw:find("hoshino") ~= nil
+        or raw:find("otaku") ~= nil
+        or raw:find("farm") ~= nil
+        or raw:find("nami") ~= nil
+        or raw:find("burglar") ~= nil
+        or raw:find("weather girl") ~= nil
+        or raw:find("chiyo") ~= nil
+        or raw:find("celeb") ~= nil
+        or raw:find("money") ~= nil
+        or raw:find("income") ~= nil
+        or clean:find("bulm") ~= nil
+        or clean:find("bulb") ~= nil
+        or clean:find("ceo") ~= nil
+        or clean:find("speedwagon") ~= nil
+        or clean:find("speedcart") ~= nil
+        or clean:find("idol") ~= nil
+        or clean:find("hoshino") ~= nil
+        or clean:find("otaku") ~= nil
+        or clean:find("farm") ~= nil then
         return true
     end
     local UnitsData = getUnitsData()
@@ -2063,6 +2097,11 @@ local isFarmUnit = function(unitInput)
     if db then
         if db.farm_amount ~= nil or db.is_farm == true or db._show_as_farm_unit == true or db.money ~= nil or db.income ~= nil then
             return true
+        end
+        if db.tags and type(db.tags) == "table" then
+            for _, tg in ipairs(db.tags) do
+                if tostring(tg):lower():find("farm") then return true end
+            end
         end
     end
     return false
@@ -2891,6 +2930,10 @@ State.startPickingPlacementArea = function()
             State.PlacementPickConn:Disconnect()
             State.PlacementPickConn = nil
         end
+        if State.PlacementPickMouseConn then
+            State.PlacementPickMouseConn:Disconnect()
+            State.PlacementPickMouseConn = nil
+        end
         local hoverFolder = Camera:FindFirstChild("_AJ_HUB_HoverMarker")
         if hoverFolder then hoverFolder:Destroy() end
         if library and library.notifications and library.notifications.create_notification then
@@ -2907,6 +2950,23 @@ State.startPickingPlacementArea = function()
             name = "AJ HUB",
             info = "Click on the map to set placement area! (Right-click or ESC to cancel)"
         })
+    end
+
+    local win = State.HubWindow
+    local wasMainVisible = win and win.items and win.items["main"] and win.items["main"].Visible
+    if win and win.toggle_menu then
+        pcall(function() win.toggle_menu(false) end)
+    elseif win and win.items and win.items["main"] then
+        pcall(function() win.items["main"].Visible = false end)
+    end
+    local function restoreWindow()
+        if wasMainVisible and win then
+            if win.toggle_menu then
+                pcall(function() win.toggle_menu(true) end)
+            elseif win.items and win.items["main"] then
+                pcall(function() win.items["main"].Visible = true end)
+            end
+        end
     end
 
     local hoverFolder = Camera:FindFirstChild("_AJ_HUB_HoverMarker")
@@ -2983,15 +3043,7 @@ State.startPickingPlacementArea = function()
     lbl.Font = Enum.Font.GothamMedium
     lbl.Parent = card
 
-    local function isClickInsideHubWindow(screenX, screenY)
-        local win = State.HubWindow
-        if not (win and win.items and win.items["main"]) then return false end
-        local main = win.items["main"]
-        if not main.Visible then return false end
-        local pos = main.AbsolutePosition
-        local size = main.AbsoluteSize
-        return screenX >= pos.X and screenX <= (pos.X + size.X) and screenY >= pos.Y and screenY <= (pos.Y + size.Y)
-    end
+    local lastHoverPos = nil
 
     local function getPickPosition(screenPos)
         local mouse = LocalPlayer:GetMouse()
@@ -3005,10 +3057,10 @@ State.startPickingPlacementArea = function()
                 return mouse.Hit.Position
             end
         end
-        local ray = Camera:ScreenPointToRay(screenPos.X, screenPos.Y)
+        local ray = Camera:ViewportPointToRay(screenPos.X, screenPos.Y)
         local rayParams = RaycastParams.new()
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
-        rayParams.RespectCanCollide = true
+        rayParams.RespectCanCollide = false
         local ignore = {}
         if LocalPlayer.Character then table.insert(ignore, LocalPlayer.Character) end
         if Workspace:FindFirstChild("_UNITS") then table.insert(ignore, Workspace._UNITS) end
@@ -3022,6 +3074,9 @@ State.startPickingPlacementArea = function()
         if hit and hit.Position then
             return hit.Position
         end
+        if mouse and mouse.Hit then
+            return mouse.Hit.Position
+        end
         return nil
     end
 
@@ -3034,6 +3089,7 @@ State.startPickingPlacementArea = function()
         local mousePos = UserInputService:GetMouseLocation()
         local pos = getPickPosition(mousePos)
         if pos then
+            lastHoverPos = pos
             hoverRing.CFrame = CFrame.new(pos + Vector3.new(0, 0.06, 0))
             hoverTag.Position = pos
             img.ImageTransparency = 0.25
@@ -3052,19 +3108,63 @@ State.startPickingPlacementArea = function()
         State.PlacementPickConn:Disconnect()
         State.PlacementPickConn = nil
     end
+    if State.PlacementPickMouseConn then
+        State.PlacementPickMouseConn:Disconnect()
+        State.PlacementPickMouseConn = nil
+    end
+
+    local startTime = tick()
+
+    local function cleanupPicker()
+        State.PickingPlacementArea = false
+        if State.PlacementPickConn then State.PlacementPickConn:Disconnect(); State.PlacementPickConn = nil end
+        if State.PlacementPickMouseConn then State.PlacementPickMouseConn:Disconnect(); State.PlacementPickMouseConn = nil end
+        if hoverConn then hoverConn:Disconnect(); hoverConn = nil end
+        if hoverFolder then hoverFolder:Destroy() end
+        restoreWindow()
+    end
+
+    local function onSelectArea()
+        if tick() - startTime < 0.25 then return end
+        local mousePos = UserInputService:GetMouseLocation()
+        local mouse = LocalPlayer:GetMouse()
+        local hitPos = getPickPosition(mousePos) or lastHoverPos or (hoverRing and hoverRing.Position) or (mouse and mouse.Hit and mouse.Hit.Position)
+        if hitPos then
+            cleanupPicker()
+            local mapKey = State.getMapKey() or "CurrentMap"
+            Config.CustomPlacementAreas = Config.CustomPlacementAreas or {}
+            Config.CustomPlacementAreas[mapKey] = {
+                x = math.floor(hitPos.X * 10) / 10,
+                y = math.floor(hitPos.Y * 10) / 10,
+                z = math.floor(hitPos.Z * 10) / 10,
+                name = State.CurrentMapName or mapKey
+            }
+            Config.UseCustomPlacementArea = true
+            pcall(saveConfigToFile)
+            pcall(computeCompactGrid)
+            pcall(State.updatePlacementMarker)
+            pcall(renderVisualGrid)
+            if library and library.notifications and library.notifications.create_notification then
+                library.notifications:create_notification({
+                    name = "AJ HUB",
+                    info = string.format("Placement area saved for [%s]! (%.1f, %.1f, %.1f)", mapKey, hitPos.X, hitPos.Y, hitPos.Z)
+                })
+            end
+        end
+    end
+
+    pcall(function()
+        local mouse = LocalPlayer:GetMouse()
+        State.PlacementPickMouseConn = mouse.Button1Down:Connect(onSelectArea)
+    end)
 
     State.PlacementPickConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if not State.PickingPlacementArea then
-            if State.PlacementPickConn then State.PlacementPickConn:Disconnect(); State.PlacementPickConn = nil end
-            if hoverConn then hoverConn:Disconnect(); hoverConn = nil end
-            if hoverFolder then hoverFolder:Destroy() end
+            cleanupPicker()
             return
         end
         if input.UserInputType == Enum.UserInputType.MouseButton2 or input.KeyCode == Enum.KeyCode.Escape then
-            State.PickingPlacementArea = false
-            if State.PlacementPickConn then State.PlacementPickConn:Disconnect(); State.PlacementPickConn = nil end
-            if hoverConn then hoverConn:Disconnect(); hoverConn = nil end
-            if hoverFolder then hoverFolder:Destroy() end
+            cleanupPicker()
             if library and library.notifications and library.notifications.create_notification then
                 library.notifications:create_notification({
                     name = "AJ HUB",
@@ -3074,37 +3174,7 @@ State.startPickingPlacementArea = function()
             return
         end
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            local mLoc = (input.Position and input.Position.X > 0) and Vector2.new(input.Position.X, input.Position.Y) or UserInputService:GetMouseLocation()
-            if isClickInsideHubWindow(mLoc.X, mLoc.Y) then
-                return
-            end
-            local hitPos = getPickPosition(mLoc)
-            if hitPos then
-                State.PickingPlacementArea = false
-                if State.PlacementPickConn then State.PlacementPickConn:Disconnect(); State.PlacementPickConn = nil end
-                if hoverConn then hoverConn:Disconnect(); hoverConn = nil end
-                if hoverFolder then hoverFolder:Destroy() end
-
-                local mapKey = State.getMapKey() or "CurrentMap"
-                Config.CustomPlacementAreas = Config.CustomPlacementAreas or {}
-                Config.CustomPlacementAreas[mapKey] = {
-                    x = math.floor(hitPos.X * 10) / 10,
-                    y = math.floor(hitPos.Y * 10) / 10,
-                    z = math.floor(hitPos.Z * 10) / 10,
-                    name = State.CurrentMapName or mapKey
-                }
-                Config.UseCustomPlacementArea = true
-                saveConfigToFile()
-                computeCompactGrid()
-                State.updatePlacementMarker()
-                renderVisualGrid()
-                if library and library.notifications and library.notifications.create_notification then
-                    library.notifications:create_notification({
-                        name = "AJ HUB",
-                        info = string.format("Placement area saved for [%s]! (%.1f, %.1f, %.1f)", mapKey, hitPos.X, hitPos.Y, hitPos.Z)
-                    })
-                end
-            end
+            onSelectArea()
         end
     end)
 end
@@ -3204,7 +3274,11 @@ computeCompactGrid = function()
     local stepZ = 1.55 * 0.86602540378
     local seenCells = {}
     local roadFolder = Workspace:FindFirstChild("_road")
-    local activePercentages = {[Config.PathPercentage] = true}
+    local activePercentages = {
+        [Config.PathPercentage] = true,
+        [Config.FarmPathPercentage or 85] = true,
+        [95] = true
+    }
     local equippedUnits = getEquippedUnits()
     for _, eq in ipairs(equippedUnits) do
         local custom = eq.slot and Config.UnitCustomSettings and Config.UnitCustomSettings[eq.slot]
@@ -3745,7 +3819,7 @@ renderVisualGrid = function()
             end
             if #candidates == 0 and isFarm then
                 for _, spot in ipairs(State.Spots) do
-                    if not spot.occupied and not State.FailedSpots[spot.index] and not usedSpotIndices[spot.index] then
+                    if not spot.occupied and not State.FailedSpots[spot.index] and not usedSpotIndices[spot.index] and not spot.isCustomArea then
                         local typeMatches = false
                         if eq.isHybrid then
                             typeMatches = true
@@ -4841,6 +4915,9 @@ local processAutoPlace = function()
         playerAnchors = stickAnchors
     end
     local scoreSpot = function(spot)
+        if isFarm and spot.isCustomArea then
+            return math.huge
+        end
         if playerAnchors and #playerAnchors > 0 then
             local center = playerAnchors[1]
             local dist = (spot.position - center).Magnitude
@@ -4898,7 +4975,7 @@ local processAutoPlace = function()
     end
     if not bestSpot and isFarm then
         for _, spot in ipairs(State.Spots) do
-            if not spot.occupied and not State.FailedSpots[spot.index] then
+            if not spot.occupied and not State.FailedSpots[spot.index] and not spot.isCustomArea then
                 local typeMatches = false
                 if targetUnitInfo.isHybrid then
                     typeMatches = true
@@ -4919,11 +4996,26 @@ local processAutoPlace = function()
     end
     if not bestSpot and targetUnitInfo and targetUnitInfo.isHybrid then
         for _, spot in ipairs(State.Spots) do
-            if not spot.occupied and not State.FailedSpots[spot.index] then
+            if not spot.occupied and not State.FailedSpots[spot.index] and not (isFarm and spot.isCustomArea) then
                 local score = scoreSpot(spot)
                 if score < bestScore then
                     bestScore = score
                     bestSpot = spot
+                end
+            end
+        end
+    end
+    if not bestSpot and isFarm then
+        for _, spot in ipairs(State.Spots) do
+            if not spot.occupied and not State.FailedSpots[spot.index] and not spot.isCustomArea then
+                local typeMatches = targetUnitInfo.isHybrid or (targetUnitInfo.isHill and spot.isHill) or (not targetUnitInfo.isHill and not spot.isHill)
+                if typeMatches then
+                    local pctDiff = math.abs((spot.pathPercent or 50) - desiredPct)
+                    local score = 10000 + (pctDiff * 10)
+                    if score < bestScore then
+                        bestScore = score
+                        bestSpot = spot
+                    end
                 end
             end
         end
@@ -9056,6 +9148,10 @@ getgenv().AJ_HUB_MAIN_THREAD = task.spawn(function()
                     if State.PlacementPickConn then
                         State.PlacementPickConn:Disconnect()
                         State.PlacementPickConn = nil
+                    end
+                    if State.PlacementPickMouseConn then
+                        State.PlacementPickMouseConn:Disconnect()
+                        State.PlacementPickMouseConn = nil
                     end
                 end
             end
