@@ -895,6 +895,8 @@ Config = {
     AutoNextStory = false,
     AutoNextRoom = false,
     AutoNextPortal = false,
+    LastPortalItemId = "",
+    LastPortalName = "",
     AutoLeave = true,
     AutoBuffWendy = false,
     AutoBuffCommander = false,
@@ -1633,6 +1635,8 @@ end
 State = {
     UIInitialized = false,
     CurrentProfile = "Default",
+    LastLaunchedPortalItemId = nil,
+    LastLaunchedPortalName = nil,
     CurrentMapKey = nil,
     CurrentMapName = nil,
     CurrentMapData = nil,
@@ -1660,6 +1664,7 @@ State = {
     LastStartVoteTime = 0,
     LastMatchActionTime = 0,
     GriffinBuffCompleted = false,
+    GriffinPlacedOnce = false,
     LastGriffinAction = 0,
     LastGridCompute = 0,
     LastLobbyCheck = 0,
@@ -3156,6 +3161,7 @@ computeCompactGrid = function()
         State.PlayerAnchors = nil
         State.StickClusterCenter = nil
         State.GriffinBuffCompleted = false
+        State.GriffinPlacedOnce = false
         local v = Camera:FindFirstChild("_AJ_HUB_VisualGrid") or Workspace:FindFirstChild("_AJ_HUB_VisualGrid")
         if v then v:Destroy() end
         local g = Camera:FindFirstChild("_AJ_HUB_GhostPreview") or Workspace:FindFirstChild("_AJ_HUB_GhostPreview")
@@ -3693,117 +3699,141 @@ renderVisualGrid = function()
     local spotsToRender = {}
     local usedSpotIndices = {}
     for _, eq in ipairs(equipped) do
-        local custom = eq.slot and Config.UnitCustomSettings and Config.UnitCustomSettings[eq.slot]
-        local isCEO = isCEOUnit(eq)
-        local isFarm = isFarmUnit(eq)
-        local targetPct
-        if custom and custom.CustomPath and custom.CustomPath > 0 then
-            targetPct = custom.CustomPath
-        elseif isCEO then
-            targetPct = 95
-        elseif isFarm then
-            targetPct = Config.FarmPathPercentage or 85
-        else
-            targetPct = Config.PathPercentage
-        end
-        local placeLimit = 2
-        if custom and custom.Amount and custom.Amount > 0 then
-            placeLimit = custom.Amount
-        elseif Config.SlotLimits and Config.SlotLimits[eq.slot] and Config.SlotLimits[eq.slot] > 0 then
-            placeLimit = Config.SlotLimits[eq.slot]
-        elseif eq.max then
-            placeLimit = eq.max
-        end
-        local isCustom = (custom and custom.CustomPath and custom.CustomPath > 0) or isFarm
-        local candidates = {}
-        for _, spot in ipairs(State.Spots) do
-            if not spot.occupied and not State.FailedSpots[spot.index] and not usedSpotIndices[spot.index] then
-                local typeMatches = false
-                if eq.isHybrid then
-                    typeMatches = true
-                elseif eq.isHill then
-                    typeMatches = spot.isHill
-                else
-                    typeMatches = not spot.isHill
-                end
-                if typeMatches then
-                    table.insert(candidates, spot)
-                end
+        local grifConfigured = State.hasAutoGriffithConfigured and State.hasAutoGriffithConfigured()
+        local grifDone = State.GriffinBuffCompleted or (State.isGriffinBuffCompleted and State.isGriffinBuffCompleted())
+        local skipGridUnit = State.isGriffinUnit(eq) and (grifConfigured or grifDone or State.GriffinPlacedOnce)
+        if not skipGridUnit then
+            local custom = eq.slot and Config.UnitCustomSettings and Config.UnitCustomSettings[eq.slot]
+            local isCEO = isCEOUnit(eq)
+            local isFarm = isFarmUnit(eq)
+            local targetPct
+            if custom and custom.CustomPath and custom.CustomPath > 0 then
+                targetPct = custom.CustomPath
+            elseif isCEO then
+                targetPct = 95
+            elseif isFarm then
+                targetPct = Config.FarmPathPercentage or 85
+            else
+                targetPct = Config.PathPercentage
             end
-        end
-        local stickAnchors = Config.PlaceStickToPlayers and State.getOtherPlayersAnchors()
-        if Config.PlaceStickToPlayers and (not stickAnchors or #stickAnchors == 0) then
-            candidates = {}
-        elseif stickAnchors and #stickAnchors > 0 and not isFarm then
-            local center = stickAnchors[1]
-            table.sort(candidates, function(a, b)
-                local distA = (a.position - center).Magnitude
-                local distB = (b.position - center).Magnitude
-                local inCircleA = distA <= 22.0
-                local inCircleB = distB <= 22.0
-                if inCircleA ~= inCircleB then
-                    return inCircleA
-                end
-                return distA < distB
-            end)
-        else
-            local targetPos = nil
-            local customAreaPos = State.getCustomPlacementArea()
-            if customAreaPos then
-                targetPos = customAreaPos
-            elseif State.Lanes then
-                local targetLane = State.Lanes["1"] or select(2, next(State.Lanes))
-                if targetLane and #targetLane >= 2 then
-                    local totalLength = 0
-                    for i = 1, #targetLane - 1 do
-                        totalLength = totalLength + (targetLane[i + 1] - targetLane[i]).Magnitude
+            local placeLimit = 2
+            if custom and custom.Amount and custom.Amount > 0 then
+                placeLimit = custom.Amount
+            elseif Config.SlotLimits and Config.SlotLimits[eq.slot] and Config.SlotLimits[eq.slot] > 0 then
+                placeLimit = Config.SlotLimits[eq.slot]
+            elseif eq.max then
+                placeLimit = eq.max
+            end
+            local isCustom = (custom and custom.CustomPath and custom.CustomPath > 0) or isFarm
+            local candidates = {}
+            for _, spot in ipairs(State.Spots) do
+                if not spot.occupied and not State.FailedSpots[spot.index] and not usedSpotIndices[spot.index] then
+                    if not (isFarm and spot.isCustomArea) then
+                        local typeMatches = false
+                        if eq.isHybrid then
+                            typeMatches = true
+                        elseif eq.isHill then
+                            typeMatches = spot.isHill
+                        else
+                            typeMatches = not spot.isHill
+                        end
+                        if typeMatches then
+                            table.insert(candidates, spot)
+                        end
                     end
-                    local d = math.clamp(targetPct / 100, 0, 1) * totalLength
-                    targetPos, _ = getPointAndDirectionAtDistance(d, targetLane)
                 end
             end
-            table.sort(candidates, function(a, b)
-                local distA = targetPos and (a.position - targetPos).Magnitude or a.centerDistance
-                local distB = targetPos and (b.position - targetPos).Magnitude or b.centerDistance
-                local inCircleA = distA <= 18.0
-                local inCircleB = distB <= 18.0
-                if inCircleA ~= inCircleB then
-                    return inCircleA
-                end
-                return distA < distB
-            end)
-        end
-        local realRad = State.getUnitRealRadius(eq)
-        local minSeparation = math.max(realRad * 1.85, 2.1)
-        local minSepSq = minSeparation * minSeparation
-        local selectedCandidates = {}
-        for _, spot in ipairs(candidates) do
-            if #selectedCandidates >= placeLimit then break end
-            local tooClose = false
-            for _, prev in ipairs(selectedCandidates) do
-                local dx = spot.position.X - prev.position.X
-                local dz = spot.position.Z - prev.position.Z
-                if (dx * dx + dz * dz) < minSepSq then
-                    tooClose = true
-                    break
+            if #candidates == 0 and isFarm then
+                for _, spot in ipairs(State.Spots) do
+                    if not spot.occupied and not State.FailedSpots[spot.index] and not usedSpotIndices[spot.index] then
+                        local typeMatches = false
+                        if eq.isHybrid then
+                            typeMatches = true
+                        elseif eq.isHill then
+                            typeMatches = spot.isHill
+                        else
+                            typeMatches = not spot.isHill
+                        end
+                        if typeMatches then
+                            table.insert(candidates, spot)
+                        end
+                    end
                 end
             end
-            if not tooClose then
-                table.insert(selectedCandidates, spot)
+            local stickAnchors = Config.PlaceStickToPlayers and State.getOtherPlayersAnchors()
+            if Config.PlaceStickToPlayers and (not stickAnchors or #stickAnchors == 0) then
+                candidates = {}
+            elseif stickAnchors and #stickAnchors > 0 and not isFarm then
+                local center = stickAnchors[1]
+                table.sort(candidates, function(a, b)
+                    local distA = (a.position - center).Magnitude
+                    local distB = (b.position - center).Magnitude
+                    local inCircleA = distA <= 22.0
+                    local inCircleB = distB <= 22.0
+                    if inCircleA ~= inCircleB then
+                        return inCircleA
+                    end
+                    return distA < distB
+                end)
+            else
+                local targetPos = nil
+                local customAreaPos = (not isFarm) and State.getCustomPlacementArea() or nil
+                if customAreaPos then
+                    targetPos = customAreaPos
+                elseif State.Lanes then
+                    local targetLane = State.Lanes["1"] or select(2, next(State.Lanes))
+                    if targetLane and #targetLane >= 2 then
+                        local totalLength = 0
+                        for i = 1, #targetLane - 1 do
+                            totalLength = totalLength + (targetLane[i + 1] - targetLane[i]).Magnitude
+                        end
+                        local d = math.clamp(targetPct / 100, 0, 1) * totalLength
+                        targetPos, _ = getPointAndDirectionAtDistance(d, targetLane)
+                    end
+                end
+                table.sort(candidates, function(a, b)
+                    local distA = targetPos and (a.position - targetPos).Magnitude or a.centerDistance
+                    local distB = targetPos and (b.position - targetPos).Magnitude or b.centerDistance
+                    local inCircleA = distA <= 18.0
+                    local inCircleB = distB <= 18.0
+                    if inCircleA ~= inCircleB then
+                        return inCircleA
+                    end
+                    return distA < distB
+                end)
             end
-        end
-        local count = #selectedCandidates
-        for i = 1, count do
-            local spot = selectedCandidates[i]
-            usedSpotIndices[spot.index] = true
-            spotsToRender[spot.index] = {
-                spot = spot,
-                isCustom = isCustom,
-                unitName = eq.name,
-                spotNum = i,
-                totalNeed = count,
-                isTarget = true
-            }
+            local realRad = State.getUnitRealRadius(eq)
+            local minSeparation = math.max(realRad * 1.85, 2.1)
+            local minSepSq = minSeparation * minSeparation
+            local selectedCandidates = {}
+            for _, spot in ipairs(candidates) do
+                if #selectedCandidates >= placeLimit then break end
+                local tooClose = false
+                for _, prev in ipairs(selectedCandidates) do
+                    local dx = spot.position.X - prev.position.X
+                    local dz = spot.position.Z - prev.position.Z
+                    if (dx * dx + dz * dz) < minSepSq then
+                        tooClose = true
+                        break
+                    end
+                end
+                if not tooClose then
+                    table.insert(selectedCandidates, spot)
+                end
+            end
+            local count = #selectedCandidates
+            for i = 1, count do
+                local spot = selectedCandidates[i]
+                usedSpotIndices[spot.index] = true
+                spotsToRender[spot.index] = {
+                    spot = spot,
+                    isCustom = isCustom,
+                    unitName = eq.name,
+                    spotNum = i,
+                    totalNeed = count,
+                    isTarget = true
+                }
+            end
         end
     end
     if State.NextSpot and not spotsToRender[State.NextSpot.index] then
@@ -4099,6 +4129,15 @@ State.isGriffinBuffCompleted = function()
             State.GriffinBuffCompleted = true
             return true
         end
+        local gName = griffin.Name:lower()
+        if (gName:find("femto") and not gName:find("egg")) or gName:find("reincarnation") then
+            State.GriffinBuffCompleted = true
+            return true
+        end
+        if griffin:GetAttribute("buff_completed") or griffin:GetAttribute("transformed") or griffin:GetAttribute("sacrifice_completed") then
+            State.GriffinBuffCompleted = true
+            return true
+        end
     end
 
     local owned = getOwnedUnitsInGame()
@@ -4111,6 +4150,17 @@ State.isGriffinBuffCompleted = function()
                 State.GriffinBuffCompleted = true
                 return true
             end
+            for _, ch in ipairs(stats:GetChildren()) do
+                local n = ch.Name:lower()
+                if (n:find("griff") or n:find("femto")) and n:find("buff") then
+                    State.GriffinBuffCompleted = true
+                    return true
+                end
+            end
+        end
+        if u:GetAttribute("damage_buff__griffith") or u:GetAttribute("griffith_buff") then
+            State.GriffinBuffCompleted = true
+            return true
         end
     end
     return false
@@ -4118,6 +4168,9 @@ end
 
 State.isAutoGriffithActive = function()
     if isLobby() then return false end
+    if State.GriffinBuffCompleted or (State.isGriffinBuffCompleted and State.isGriffinBuffCompleted()) then
+        return false
+    end
     local eqGriffin, custom = State.getEquippedGriffinInfo()
     if not eqGriffin or not custom or not custom.AutoGriffith then
         return false
@@ -4125,9 +4178,6 @@ State.isAutoGriffithActive = function()
     local currentWave = getCurrentWave()
     local startWave = tonumber(custom.AutoGriffithWave) or 1
     if currentWave < startWave then
-        return false
-    end
-    if State.isGriffinBuffCompleted() then
         return false
     end
     return true
@@ -4236,6 +4286,7 @@ end
 State.getUnitUpgradeCost = getUnitUpgradeCost
 
 State.processAutoGriffith = function()
+    if State.GriffinBuffCompleted or (State.isGriffinBuffCompleted and State.isGriffinBuffCompleted()) then return end
     if not State.isAutoGriffithActive() then return end
     if tick() - (State.LastGriffinAction or 0) < 0.25 then return end
     State.LastGriffinAction = tick()
@@ -4244,7 +4295,12 @@ State.processAutoGriffith = function()
     local eqGriffin, custom = State.getEquippedGriffinInfo()
     local money = getPlayerMoney()
 
+    if griffin then
+        State.GriffinPlacedOnce = true
+    end
+
     if not griffin then
+        if State.GriffinBuffCompleted or State.GriffinPlacedOnce then return end
         if not eqGriffin or (eqGriffin.cur and eqGriffin.cur >= 1) then return end
         if money < eqGriffin.cost then return end
         if State.IsPlacingUnit and (tick() - (State.PlacingStartTime or 0)) < 4.0 then return end
@@ -4371,6 +4427,7 @@ State.processAutoGriffith = function()
                     end
                 end)
                 if ok and res == true then
+                    State.GriffinPlacedOnce = true
                     if bestSpot.index and bestSpot.index > 0 then
                         bestSpot.occupied = true
                         markSpotVisualOccupied(bestSpot.index)
@@ -4502,6 +4559,10 @@ State.processAutoGriffith = function()
                     Endpoints.use_active_attack:InvokeServer(griffin)
                 end
             end)
+            if remainingNeeded <= 0 or (State.isGriffinSacrifice100 and State.isGriffinSacrifice100(griffin)) then
+                State.GriffinBuffCompleted = true
+                return true
+            end
             task.wait(0.5)
             if State.isGriffinBuffCompleted() then
                 return true
@@ -4512,7 +4573,7 @@ State.processAutoGriffith = function()
     end
 
     -- 3. If target reached or exceeded: stop placing/upgrading and trigger sacrifice!
-    if remainingNeeded <= 0 then
+    if remainingNeeded <= 0 or (State.isGriffinSacrifice100 and State.isGriffinSacrifice100(griffin)) then
         tryTriggerSacrifice()
         return
     end
@@ -4713,12 +4774,20 @@ local processAutoPlace = function()
     end
     local targetUnitInfo = nil
     local order = Config.UseCustomPlacementOrder and Config.PlacementOrder or {1, 2, 3, 4, 5, 6}
-    local grifConfigured = State.hasAutoGriffithConfigured and State.hasAutoGriffithConfigured() and not State.isGriffinBuffCompleted()
+    local grifConfigured = State.hasAutoGriffithConfigured and State.hasAutoGriffithConfigured()
+    local grifDone = State.GriffinBuffCompleted or (State.isGriffinBuffCompleted and State.isGriffinBuffCompleted())
     for _, slotIndex in ipairs(order) do
         if Config.SlotPlacement[slotIndex] ~= false and (Config.SlotLimits[slotIndex] or 6) > 0 then
             for _, eq in ipairs(equipped) do
                 if eq.slot == slotIndex and eq.canPlaceMore then
-                    if grifConfigured and (State.isBuffFodderUnit(eq) or State.isGriffinUnit(eq)) then
+                    if State.isGriffinUnit(eq) then
+                        if grifConfigured or grifDone or State.GriffinPlacedOnce then
+                            -- Auto Griffith is configured, finished, or Griffin already placed: do not place via normal Auto Place!
+                        else
+                            targetUnitInfo = eq
+                            break
+                        end
+                    elseif grifConfigured and not grifDone and State.isBuffFodderUnit(eq) then
                         -- Reserved for Auto Griffith
                     else
                         targetUnitInfo = eq
@@ -4751,7 +4820,7 @@ local processAutoPlace = function()
     else
         desiredPct = Config.PathPercentage
     end
-    local customAreaPos = State.getCustomPlacementArea()
+    local customAreaPos = (not isFarm) and State.getCustomPlacementArea() or nil
     local targetCenterPos = nil
     if customAreaPos then
         targetCenterPos = customAreaPos
@@ -4799,28 +4868,51 @@ local processAutoPlace = function()
     end
     for _, spot in ipairs(State.Spots) do
         if not spot.occupied and not State.FailedSpots[spot.index] then
-            local typeMatches = false
-            if targetUnitInfo.isHybrid then
-                local uName = targetUnitInfo.name or ""
-                local prefGround = (Config.HybridGround == uName or Config.HybridGround == "All Hybrid" or (type(Config.HybridGround) == "table" and table.find(Config.HybridGround, uName)))
-                local prefHill = (Config.HybridHill == uName or Config.HybridHill == "All Hybrid" or (type(Config.HybridHill) == "table" and table.find(Config.HybridHill, uName)))
-                if prefGround and not prefHill then
-                    typeMatches = not spot.isHill
-                elseif prefHill and not prefGround then
+            if not (isFarm and spot.isCustomArea) then
+                local typeMatches = false
+                if targetUnitInfo.isHybrid then
+                    local uName = targetUnitInfo.name or ""
+                    local prefGround = (Config.HybridGround == uName or Config.HybridGround == "All Hybrid" or (type(Config.HybridGround) == "table" and table.find(Config.HybridGround, uName)))
+                    local prefHill = (Config.HybridHill == uName or Config.HybridHill == "All Hybrid" or (type(Config.HybridHill) == "table" and table.find(Config.HybridHill, uName)))
+                    if prefGround and not prefHill then
+                        typeMatches = not spot.isHill
+                    elseif prefHill and not prefGround then
+                        typeMatches = spot.isHill
+                    else
+                        typeMatches = true
+                    end
+                elseif targetUnitInfo.isHill then
                     typeMatches = spot.isHill
                 else
-                    typeMatches = true
+                    typeMatches = not spot.isHill
                 end
-            elseif targetUnitInfo.isHill then
-                typeMatches = spot.isHill
-            else
-                typeMatches = not spot.isHill
+                if typeMatches then
+                    local score = scoreSpot(spot)
+                    if score < bestScore then
+                        bestScore = score
+                        bestSpot = spot
+                    end
+                end
             end
-            if typeMatches then
-                local score = scoreSpot(spot)
-                if score < bestScore then
-                    bestScore = score
-                    bestSpot = spot
+        end
+    end
+    if not bestSpot and isFarm then
+        for _, spot in ipairs(State.Spots) do
+            if not spot.occupied and not State.FailedSpots[spot.index] then
+                local typeMatches = false
+                if targetUnitInfo.isHybrid then
+                    typeMatches = true
+                elseif targetUnitInfo.isHill then
+                    typeMatches = spot.isHill
+                else
+                    typeMatches = not spot.isHill
+                end
+                if typeMatches then
+                    local score = scoreSpot(spot)
+                    if score < bestScore then
+                        bestScore = score
+                        bestSpot = spot
+                    end
                 end
             end
         end
@@ -5059,12 +5151,15 @@ local processAutoUpgrade = function()
     if #owned == 0 then return end
     if Config.AutoPlaceEnabled then
         local placeOrder = Config.UseCustomPlacementOrder and Config.PlacementOrder or {1, 2, 3, 4, 5, 6}
-        local grifConfigured = State.hasAutoGriffithConfigured and State.hasAutoGriffithConfigured() and not State.isGriffinBuffCompleted()
+        local grifConfigured = State.hasAutoGriffithConfigured and State.hasAutoGriffithConfigured()
+        local grifDone = State.GriffinBuffCompleted or (State.isGriffinBuffCompleted and State.isGriffinBuffCompleted())
         for _, slotIndex in ipairs(placeOrder) do
             if Config.SlotPlacement[slotIndex] ~= false and (Config.SlotLimits[slotIndex] or 6) > 0 then
                 for _, eq in ipairs(equipped) do
                     if eq.slot == slotIndex and eq.canPlaceMore then
-                        if not (grifConfigured and (State.isBuffFodderUnit(eq) or State.isGriffinUnit(eq))) then
+                        local isGrifIgnored = State.isGriffinUnit(eq) and (grifConfigured or grifDone or State.GriffinPlacedOnce)
+                        local isFodderReserved = grifConfigured and not grifDone and State.isBuffFodderUnit(eq)
+                        if not (isGrifIgnored or isFodderReserved) then
                             return
                         end
                     end
@@ -6266,8 +6361,269 @@ local sendMatchWebhook = function(isTest)
 end
 getgenv().AJ_HUB_SEND_WEBHOOK = sendMatchWebhook
 
+local recordLastPortalByItemId
+local recordLastPortalByUuid
+local detectPortalItemIdFromLevelData
+local getInventoryPortalCandidates
+local pickNextPortalCandidate
+local hookEndpointsClientForPortals
+
+recordLastPortalByItemId = function(itemId)
+    if not itemId or itemId == "" then return end
+    if State then
+        State.LastLaunchedPortalItemId = itemId
+    end
+    if Config then
+        Config.LastPortalItemId = itemId
+    end
+    pcall(function()
+        local l = getLoader()
+        local Items = l and l.load_data and l.load_data(script, "Items")
+        if Items and Items[itemId] and Items[itemId].name then
+            if State then State.LastLaunchedPortalName = Items[itemId].name end
+            if Config then Config.LastPortalName = Items[itemId].name end
+        end
+    end)
+    triggerAutoSave()
+end
+
+recordLastPortalByUuid = function(uuid)
+    if not uuid then return end
+    pcall(function()
+        local l = getLoader()
+        local invSvc = l and l.load_client_service and l.load_client_service(nil, "ItemInventoryServiceClient")
+        local pInv = invSvc and invSvc.session and invSvc.session.inventory
+        local item = pInv and pInv.get_item_by_uuid and pInv:get_item_by_uuid(uuid)
+        if not item and pInv and pInv.item_uuid_cache then
+            item = pInv.item_uuid_cache[uuid]
+        end
+        if not item and pInv and pInv.inventory_profile_data and pInv.inventory_profile_data.unique_items then
+            for _, it in pairs(pInv.inventory_profile_data.unique_items) do
+                if type(it) == "table" and it.uuid == uuid then
+                    item = it
+                    break
+                end
+            end
+        end
+        if item and (item.item_id or item._item_id) then
+            local itemId = item.item_id or item._item_id
+            recordLastPortalByItemId(itemId)
+        end
+    end)
+end
+
+detectPortalItemIdFromLevelData = function(ld)
+    if not ld then return nil end
+    local l = getLoader()
+    local Items = nil
+    pcall(function()
+        Items = l and l.load_data and l.load_data(script, "Items")
+    end)
+    if not Items then return nil end
+
+    local bestItemId = nil
+    local bestScore = 0
+    for itemId, item in pairs(Items) do
+        if item.item_group == "Portals" or (item.usage and item.usage.type == "open_portal") or (itemId and string.find(string.lower(tostring(itemId)), "portal")) then
+            local score = 0
+            local model = item._override_portal_model or (item.static_portal_copy_to_level_params and item.static_portal_copy_to_level_params.override_portal)
+            if ld.override_portal and model and model == ld.override_portal then
+                score = score + 20
+            end
+            if ld.id and (item.usage and item.usage.level_id == ld.id) then
+                score = score + 25
+            end
+            if ld.id and (type(item._unique_portal_levels) == "table" and item._unique_portal_levels[ld.id]) then
+                score = score + 25
+            end
+            local grp = (item.static_portal_copy_to_level_params and item.static_portal_copy_to_level_params.portal_group) or item.portal_group
+            if ld.portal_group and grp and grp == ld.portal_group then
+                score = score + 10
+            end
+            local pName = (item.static_portal_copy_to_level_params and item.static_portal_copy_to_level_params.name) or item.name
+            if ld.name and pName and (ld.name == pName or string.find(ld.name, pName, 1, true)) then
+                score = score + 15
+            end
+            if score > bestScore then
+                bestScore = score
+                bestItemId = itemId
+            end
+        end
+    end
+    if bestScore >= 15 then
+        return bestItemId
+    end
+    return nil
+end
+
+getInventoryPortalCandidates = function(targetItemId, targetPortalGroup)
+    local candidates = {}
+    pcall(function()
+        local l = getLoader()
+        local invSvc = l and l.load_client_service and l.load_client_service(nil, "ItemInventoryServiceClient")
+        local pInv = invSvc and invSvc.session and invSvc.session.inventory
+        if not pInv then return end
+
+        local Items = nil
+        pcall(function()
+            Items = l.load_data(script, "Items")
+        end)
+
+        local seenUuids = {}
+        local rawItems = {}
+        if pInv.inventory_profile_data and pInv.inventory_profile_data.unique_items then
+            for _, it in pairs(pInv.inventory_profile_data.unique_items) do
+                if type(it) == "table" and it.uuid then
+                    table.insert(rawItems, it)
+                    seenUuids[it.uuid] = true
+                end
+            end
+        end
+        if pInv.item_uuid_cache then
+            for uuid, it in pairs(pInv.item_uuid_cache) do
+                if type(it) == "table" and uuid and not seenUuids[uuid] then
+                    it.uuid = it.uuid or uuid
+                    table.insert(rawItems, it)
+                    seenUuids[uuid] = true
+                end
+            end
+        end
+
+        for _, item in ipairs(rawItems) do
+            local itemId = item.item_id or item._item_id
+            local itemDef = Items and itemId and Items[itemId]
+            local isPortal = false
+            if itemDef and (itemDef.item_group == "Portals" or (itemDef.usage and itemDef.usage.type == "open_portal")) then
+                isPortal = true
+            elseif itemId and string.find(string.lower(tostring(itemId)), "portal") then
+                isPortal = true
+            end
+
+            if isPortal then
+                local uData = item._unique_item_data or {}
+                local tries = tonumber(uData._portal_tries) or 0
+                local maxTries = tonumber(uData._portal_max_tries) or (itemDef and tonumber(itemDef._portal_max_tries)) or 1
+                local infiniteLives = (uData._portal_infinite_lives == true) or (itemDef and itemDef._portal_infinite_lives == true)
+                local hasLives = infiniteLives or (tries < maxTries)
+
+                if hasLives then
+                    local pData = uData._unique_portal_data or {}
+                    local tier = tonumber(pData.portal_depth) or tonumber(uData.portal_depth) or (itemDef and tonumber(itemDef.tier)) or 0
+                    local portalGroup = (itemDef and itemDef.static_portal_copy_to_level_params and itemDef.static_portal_copy_to_level_params.portal_group)
+                        or (itemDef and itemDef.portal_group)
+
+                    local matchesType = (targetItemId and targetItemId ~= "" and (itemId == targetItemId))
+                    local matchesGroup = (targetPortalGroup and targetPortalGroup ~= "" and (portalGroup == targetPortalGroup))
+
+                    table.insert(candidates, {
+                        uuid = item.uuid,
+                        item_id = itemId,
+                        tier = tier,
+                        tries = tries,
+                        maxTries = maxTries,
+                        name = (itemDef and itemDef.name) or tostring(itemId),
+                        matchesType = matchesType,
+                        matchesGroup = matchesGroup
+                    })
+                end
+            end
+        end
+    end)
+    return candidates
+end
+
+pickNextPortalCandidate = function()
+    local targetItemId = (State and State.LastLaunchedPortalItemId) or (Config and Config.LastPortalItemId)
+    local l = getLoader()
+    local ld = l and l.LevelData
+    if (not targetItemId or targetItemId == "") and ld then
+        targetItemId = detectPortalItemIdFromLevelData(ld)
+        if targetItemId then
+            recordLastPortalByItemId(targetItemId)
+        end
+    end
+
+    local targetPortalGroup = ld and ld.portal_group
+    local candidates = getInventoryPortalCandidates(targetItemId, targetPortalGroup)
+    if #candidates == 0 then
+        return nil
+    end
+
+    local sameTypeCandidates = {}
+    if targetItemId and targetItemId ~= "" then
+        for _, c in ipairs(candidates) do
+            if c.matchesType then
+                table.insert(sameTypeCandidates, c)
+            end
+        end
+    end
+
+    local pool = sameTypeCandidates
+    if #pool == 0 and targetPortalGroup then
+        local sameGroupCandidates = {}
+        for _, c in ipairs(candidates) do
+            if c.matchesGroup then
+                table.insert(sameGroupCandidates, c)
+            end
+        end
+        if #sameGroupCandidates > 0 then
+            pool = sameGroupCandidates
+        end
+    end
+
+    if #pool == 0 then
+        return nil
+    end
+
+    table.sort(pool, function(a, b)
+        if a.tier ~= b.tier then
+            return a.tier < b.tier
+        end
+        return a.tries > b.tries
+    end)
+
+    return pool[1]
+end
+
+hookEndpointsClientForPortals = function()
+    pcall(function()
+        local epc = getEndpointsClient()
+        if epc and epc.invoke_server and not epc._aj_portal_hooked then
+            epc._aj_portal_hooked = true
+            local origInvoke = epc.invoke_server
+            epc.invoke_server = function(endpointName, ...)
+                local args = {...}
+                if endpointName == "use_portal" then
+                    local uuid = args[1]
+                    pcall(function()
+                        recordLastPortalByUuid(uuid)
+                    end)
+                elseif endpointName == "set_game_finished_vote" and args[1] == "replay" and type(args[2]) == "table" and args[2].item_uuid then
+                    pcall(function()
+                        recordLastPortalByUuid(args[2].item_uuid)
+                    end)
+                end
+                return origInvoke(endpointName, ...)
+            end
+        end
+    end)
+end
+
 local processMatchAutomation = function()
+    hookEndpointsClientForPortals()
     if not isMatchFinished() then
+        pcall(function()
+            local l = getLoader()
+            local ld = l and l.LevelData
+            if ld and (ld._is_map_or_portal_level or ld.portal_group or ld._portal_depth or ld.override_portal) then
+                if not (State and State.LastLaunchedPortalItemId) or State.LastLaunchedPortalItemId == "" then
+                    local det = detectPortalItemIdFromLevelData(ld)
+                    if det then
+                        recordLastPortalByItemId(det)
+                    end
+                end
+            end
+        end)
         if State._clearDropsOnNextMatch then
             State.LastMatchSettings = nil
             State.LastDroppedItems = nil
@@ -6356,13 +6712,71 @@ local processMatchAutomation = function()
             return
         end
         if Config.AutoNextPortal then
-            if Endpoints:FindFirstChild("set_game_finished_vote") then
-                Endpoints.set_game_finished_vote:InvokeServer("replay")
+            local isPortalLevel = false
+            local l = getLoader()
+            local ld = l and l.LevelData
+            if ld and (ld._is_map_or_portal_level or ld.portal_group or ld._portal_depth or ld.override_portal) then
+                isPortalLevel = true
+            elseif resultsUI and resultsUI:FindFirstChild("Finished") and resultsUI.Finished:FindFirstChild("NextRetry") then
+                local retryBtn = resultsUI.Finished.NextRetry
+                local retryText = retryBtn:FindFirstChild("Main") and retryBtn.Main:FindFirstChild("text") and retryBtn.Main.text.Text
+                if retryText and string.find(retryText, "Portal") then
+                    isPortalLevel = true
+                end
             end
-            if resultsUI and resultsUI:FindFirstChild("Finished") and resultsUI.Finished:FindFirstChild("NextRetry") and firesignal then
-                firesignal(resultsUI.Finished.NextRetry.Activated)
+
+            if isPortalLevel then
+                local isHost = true
+                if ld and ld._owner_player_userid then
+                    isHost = (ld._owner_player_userid == LocalPlayer.UserId)
+                end
+
+                local EndpointsClient = getEndpointsClient()
+
+                if not isHost then
+                    if EndpointsClient and EndpointsClient.invoke_server then
+                        pcall(function() EndpointsClient.invoke_server("set_game_finished_vote", "replay") end)
+                    elseif Endpoints:FindFirstChild("set_game_finished_vote") then
+                        pcall(function() Endpoints.set_game_finished_vote:InvokeServer("replay") end)
+                    end
+                    return
+                end
+
+                local chosenPortal = pickNextPortalCandidate()
+                if chosenPortal and chosenPortal.uuid then
+                    if EndpointsClient and EndpointsClient.invoke_server then
+                        pcall(function()
+                            EndpointsClient.invoke_server("set_game_finished_vote", "replay", {item_uuid = chosenPortal.uuid})
+                        end)
+                    elseif Endpoints:FindFirstChild("set_game_finished_vote") then
+                        pcall(function()
+                            Endpoints.set_game_finished_vote:InvokeServer("replay", {item_uuid = chosenPortal.uuid})
+                        end)
+                    end
+                    recordLastPortalByItemId(chosenPortal.item_id)
+                    pcall(function()
+                        local guiService = getGUIService()
+                        if guiService and guiService.inventory_ui and guiService.inventory_ui.IsOpen then
+                            guiService.inventory_ui:toggle()
+                        end
+                    end)
+                else
+                    if Config.AutoLeave then
+                        if Endpoints:FindFirstChild("teleport_back_to_lobby") then
+                            Endpoints.teleport_back_to_lobby:InvokeServer()
+                        end
+                    end
+                end
+                return
+            else
+                if Endpoints:FindFirstChild("set_game_finished_vote") then
+                    Endpoints.set_game_finished_vote:InvokeServer("replay")
+                end
+                if resultsUI and resultsUI:FindFirstChild("Finished") and resultsUI.Finished:FindFirstChild("NextRetry") and firesignal then
+                    firesignal(resultsUI.Finished.NextRetry.Activated)
+                end
+                return
             end
-            return
         end
         if Config.AutoReplay then
             if Endpoints:FindFirstChild("set_game_finished_vote") then
@@ -7179,6 +7593,7 @@ local startMatchmaking = function(levelId)
     end)
 end
 local processLobbyAutomation = function()
+    hookEndpointsClientForPortals()
     if not isLobby() or State.LobbyJoining then return end
     if isMatchmakingActive() or State.MatchFound then return end
     if State.MatchFoundTime and (tick() - State.MatchFoundTime < 35) then return end
@@ -8635,6 +9050,7 @@ getgenv().AJ_HUB_MAIN_THREAD = task.spawn(function()
                 State.PlayerAnchors = nil
                 State.StickClusterCenter = nil
                 State.GriffinBuffCompleted = false
+                State.GriffinPlacedOnce = false
                 if State.PickingPlacementArea then
                     State.PickingPlacementArea = false
                     if State.PlacementPickConn then
