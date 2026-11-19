@@ -12897,10 +12897,11 @@ local function initAutoSummonTab()
             local unitsToSell = {}
             local skinsToSell = {}
 
-            -- Filter Units dropped from this auto-summon ONLY
+            -- Filter Units dropped from this auto-summon ONLY (Hardened with Secret Protection)
             if Config.AutoSummonSellUnits and unitsList and type(unitsList) == "table" and #unitsList > 0 then
                 local sellRarities = Config.AutoSummonSellUnitRarities or {"Rare", "Epic"}
                 local keepShiny = (Config.AutoSummonKeepShiny ~= false)
+                local allowSellSecret = isRaritySelected(sellRarities, "Secret")
 
                 for _, uItem in ipairs(unitsList) do
                     local uUuid = type(uItem) == "table" and uItem.uuid or uItem
@@ -12921,8 +12922,19 @@ local function initAutoSummonTab()
                             local isShiny = (uObj.shiny == true)
                             if not (keepShiny and isShiny) then
                                 local uData = UnitsData[uObj.unit_id]
-                                local rarity = uData and uData.rarity
-                                if rarity and isRaritySelected(sellRarities, rarity) then
+                                local rawRarity = uData and (uData.rarity or uData.Rarity)
+                                local rarityStr = tostring(rawRarity or ""):lower()
+                                local idStr = tostring(uObj.unit_id):lower()
+                                local nameStr = tostring(uData and uData.name or ""):lower()
+
+                                local isSecretUnit = (rarityStr:find("secret") ~= nil)
+                                    or (uData and (uData.is_secret == true or uData.secret == true))
+                                    or (idStr:find("secret") ~= nil)
+                                    or (nameStr:find("secret") ~= nil)
+
+                                if isSecretUnit and not allowSellSecret then
+                                    -- Hard-lock: Secret unit is completely protected unless Secret is explicitly selected
+                                elseif rawRarity and isRaritySelected(sellRarities, rawRarity) then
                                     table.insert(unitsToSell, uUuid)
                                 end
                             end
